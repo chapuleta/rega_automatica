@@ -28,6 +28,13 @@ bool automatic_irrigation = true;
 int moisture = 0;
 int sensor_analog = 0;
 
+// Filtro de média móvel
+const int NUM_READINGS = 20; // Número de leituras para média (aumentado para mais estabilidade)
+int readings[NUM_READINGS];  // Array para armazenar leituras
+int readIndex = 0;           // Índice atual no array
+long total = 0;              // Soma das leituras (long para evitar overflow)
+int average = 0;             // Média das leituras
+
 // Servidor Web
 AsyncWebServer server(80);
 
@@ -37,6 +44,18 @@ int last_saved_day = -1;
 
 // Função para conectar ao Wi-Fi
 void connectToWiFi() {
+  // Configuração de IP estático (opcional - comentar para usar DHCP)
+  IPAddress local_IP(192, 168, 18, 100);      // IP fixo desejado
+  IPAddress gateway(192, 168, 18, 1);         // Gateway do roteador
+  IPAddress subnet(255, 255, 255, 0);         // Máscara de sub-rede
+  IPAddress primaryDNS(8, 8, 8, 8);           // DNS primário (Google)
+  IPAddress secondaryDNS(8, 8, 4, 4);         // DNS secundário (Google)
+
+  // Configura IP estático antes de conectar
+  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
+    Serial.println("Falha ao configurar IP estático");
+  }
+
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
@@ -49,8 +68,33 @@ void connectToWiFi() {
 
 // Função para ler a umidade do solo
 int readSoilMoisture() {
-  sensor_analog = analogRead(SENSOR_PIN);
-  return 100 - ((sensor_analog / (float)MAX_ANALOG_VALUE) * 100);
+  // Lê o valor bruto do sensor com pequeno delay para estabilização
+  delay(10);
+  int raw_value = analogRead(SENSOR_PIN);
+  
+  // Remove a leitura mais antiga da soma
+  total = total - readings[readIndex];
+  
+  // Adiciona a nova leitura
+  readings[readIndex] = raw_value;
+  total = total + readings[readIndex];
+  
+  // Avança o índice (circular)
+  readIndex = (readIndex + 1) % NUM_READINGS;
+  
+  // Calcula a média
+  average = total / NUM_READINGS;
+  
+  // Rejeita valores muito discrepantes - threshold mais rigoroso
+  int threshold = 50; // Diferença máxima permitida da média
+  if (abs(raw_value - average) > threshold) {
+    // Se a leitura estiver muito fora, ignora e mantém a média
+    raw_value = average;
+  }
+  
+  // Converte para percentual de umidade
+  sensor_analog = average;
+  return 100 - ((average / (float)MAX_ANALOG_VALUE) * 100);
 }
 
 // Função para salvar a contagem de ativações da bomba
@@ -260,6 +304,14 @@ void setup() {
 
   pinMode(2, OUTPUT);           // LED no pino 2 como saída
   digitalWrite(2, HIGH);        // Mantém o LED aceso enquanto o sistema está ligado
+
+  // Inicializa o array de leituras do sensor com primeira leitura
+  int initial_reading = analogRead(SENSOR_PIN);
+  for (int i = 0; i < NUM_READINGS; i++) {
+    readings[i] = initial_reading;
+  }
+  total = initial_reading * NUM_READINGS;
+  average = initial_reading;
 
   connectToWiFi();
   syncTime();
